@@ -1,18 +1,27 @@
 PREFIX ?= $(HOME)/.local
 BIN := git-credential-code-storage
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 ARCHS ?= arm64 x86_64
 SWIFT_BUILD := swift build -c release $(foreach arch,$(ARCHS),--arch $(arch))
 BUILD = $(shell $(SWIFT_BUILD) --show-bin-path)/$(BIN)
-# Code signing identity. The default "-" is an ad-hoc signature (see README).
-CODESIGN_IDENTITY ?= -
-DIST := dist/$(BIN)-$(VERSION)-macos-universal
+DIST := dist/$(BIN)-macos-universal
 
-.PHONY: build install uninstall dist clean
+# Code signing identity. The default "-" is an ad-hoc signature (see README).
+# Releases use a Developer ID identity, which also enables notarization.
+CODESIGN_IDENTITY ?= -
+NOTARY_PROFILE ?= code-storage
+ifeq ($(CODESIGN_IDENTITY),-)
+CODESIGN_FLAGS := --options runtime
+DIST_DEPS := build
+else
+CODESIGN_FLAGS := --options runtime --timestamp
+DIST_DEPS := notarize
+endif
+
+.PHONY: build install uninstall notarize dist clean
 
 build:
 	$(SWIFT_BUILD)
-	codesign --force --sign "$(CODESIGN_IDENTITY)" --identifier com.sj26.$(BIN) $(BUILD)
+	codesign --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_FLAGS) --identifier com.sj26.$(BIN) $(BUILD)
 
 install: build
 	install -d $(PREFIX)/bin
@@ -21,7 +30,15 @@ install: build
 uninstall:
 	rm -f $(PREFIX)/bin/$(BIN)
 
-dist: build
+# Bare executables can't be stapled; Gatekeeper finds the ticket online.
+notarize: build
+	rm -f .build/$(BIN).zip
+	ditto -c -k $(BUILD) .build/$(BIN).zip
+	xcrun notarytool submit .build/$(BIN).zip --keychain-profile "$(NOTARY_PROFILE)" --wait | tee .build/notary.log
+	grep -q "status: Accepted" .build/notary.log
+	rm -f .build/$(BIN).zip .build/notary.log
+
+dist: $(DIST_DEPS)
 	rm -rf $(DIST) $(DIST).tar.gz
 	mkdir -p $(DIST)
 	cp $(BUILD) README.md LICENSE $(DIST)/

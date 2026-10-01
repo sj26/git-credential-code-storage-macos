@@ -1,72 +1,49 @@
 # git-credential-code-storage
 
-A [git credential helper](https://git-scm.com/docs/gitcredentials) for macOS that signs in to
-[Pierre Code Storage](https://code.storage) with a private key that **cannot be copied out of the
-macOS Keychain**.
+A [git credential helper](https://git-scm.com/docs/gitcredentials) for macOS that signs you in to
+[Pierre Code Storage](https://code.storage) with a private key that **cannot be copied out of your
+Keychain**.
 
-Code Storage is a hosted Git service. Each Git request carries a short-lived JWT, signed with a
-private key that you register with your organization
-([authentication docs](https://code.storage/docs/platform/authentication)). This helper mints a
-new ES256 token for each Git operation, scoped to the one repository in the URL. It signs the token
-with a key in your login keychain. The key is stored as non-extractable, so the private key
-material never enters the helper process after import, and other programs cannot read it.
+Code Storage authenticates each Git request with a short-lived token, signed by a private key that
+you register with your organization
+([docs](https://code.storage/docs/platform/authentication)). This helper keeps that key in your
+macOS login keychain and makes a new token for each Git operation. Each token is valid for one hour
+and one repository.
 
 ## Install
 
-You need macOS 13 or later. The helper is a single universal (arm64 + x86_64) binary. Install it
-anywhere on your `PATH`; these instructions use `~/.local/bin`.
-
-### From a release
+You need macOS 13 or later, on Apple silicon or Intel.
 
 ```sh
-VERSION=v0.1.0
-NAME=git-credential-code-storage-$VERSION-macos-universal
 cd "$(mktemp -d)"
-curl -fLO https://github.com/sj26/git-credential-code-storage-macos/releases/download/$VERSION/$NAME.tar.gz
-curl -fLO https://github.com/sj26/git-credential-code-storage-macos/releases/download/$VERSION/$NAME.tar.gz.sha256
-shasum -a 256 -c $NAME.tar.gz.sha256
-tar -xzf $NAME.tar.gz
+curl -fLO https://github.com/sj26/git-credential-code-storage-macos/releases/latest/download/git-credential-code-storage-macos-universal.tar.gz
+curl -fLO https://github.com/sj26/git-credential-code-storage-macos/releases/latest/download/git-credential-code-storage-macos-universal.tar.gz.sha256
+shasum -a 256 -c git-credential-code-storage-macos-universal.tar.gz.sha256
+tar -xzf git-credential-code-storage-macos-universal.tar.gz
 install -d ~/.local/bin
-install -m 0755 $NAME/git-credential-code-storage ~/.local/bin/
+install -m 0755 git-credential-code-storage-macos-universal/git-credential-code-storage ~/.local/bin/
 ```
 
-The release binary is signed ad hoc, not with an Apple Developer ID, and is not notarized. `curl`
-does not set the quarantine attribute, so the steps above work as they are. If you download the
-tarball with a browser instead, macOS Gatekeeper blocks the binary. Remove the quarantine attribute
-after you have checked the checksum:
+Make sure `~/.local/bin` is on your `PATH`, or install somewhere else that is. Releases are signed
+with a Developer ID and notarized by Apple.
 
-```sh
-xattr -d com.apple.quarantine ~/.local/bin/git-credential-code-storage
-```
-
-Or build from source.
-
-### From source
-
-You need the Xcode command line tools (`xcode-select --install`).
-
-```sh
-git clone https://github.com/sj26/git-credential-code-storage-macos.git
-cd git-credential-code-storage-macos
-make install                  # installs to ~/.local/bin
-make install PREFIX=/usr/local  # or somewhere else
-```
+To build from source instead, install the Xcode command line tools (`xcode-select --install`),
+clone this repository, and run `make install`.
 
 ## Setup
 
-1. In the Code Storage dashboard, open **Keys** and select **Create key**. Copy the private key
-   (a PKCS8 PEM). Note your organization name.
+1. In the Code Storage dashboard, open **Keys** and select **Create key**. Copy the private key.
 
-2. Import the key into your login keychain. Replace `your-org` with your organization name:
+2. Import the key into your Keychain. Replace `your-org` with your organization name:
 
    ```sh
    pbpaste | git-credential-code-storage import your-org
    ```
 
-   Then clear the key from your clipboard, and delete any copy that you saved to disk. To replace
-   the key for an organization, run `import` again.
+   Then clear your clipboard, and delete any copy of the key that you saved. To replace the key
+   later, run `import` again.
 
-3. Configure git to use the helper for Code Storage hosts, and to send the repository path to it:
+3. Tell git to use the helper for Code Storage:
 
    ```sh
    git config --global "credential.https://*.code.storage.helper" ""
@@ -74,8 +51,8 @@ make install PREFIX=/usr/local  # or somewhere else
    git config --global "credential.https://*.code.storage.useHttpPath" true
    ```
 
-   The empty `helper` entry stops other helpers (such as `osxkeychain`) from storing or supplying
-   Code Storage credentials. `useHttpPath` is required, because each token covers one repository.
+   The empty entry stops other helpers, such as the macOS Keychain helper, from saving Code Storage
+   passwords. `useHttpPath` sends the repository name to the helper.
 
 4. Use remote URLs **without a username**:
 
@@ -83,87 +60,57 @@ make install PREFIX=/usr/local  # or somewhere else
    git clone https://your-org.code.storage/your-repo.git
    ```
 
-   Do not use `https://t@your-org.code.storage/...`. With a username in the URL, git sends it with
-   an empty password. Code Storage responds with 403 (not 401), so git never asks the helper.
+   Not `https://t@your-org.code.storage/...`. With a username in the URL, git never asks the helper,
+   and Code Storage refuses the request with a 403 error.
 
 ## Commands
 
-| Command | Effect |
+| Command | What it does |
 | --- | --- |
-| `get` | Reads git credential attributes on stdin. For `https://<org>.code.storage/<repo>`, prints `username=t` and `password=<JWT>`. Ignores all other hosts. |
-| `store`, `erase` | Do nothing. Tokens are minted for each request. |
-| `import <org>` | Reads a P-256 PKCS8 PEM on stdin and stores it in the login keychain as a non-extractable key. Replaces the existing key for the org. |
-| `delete <org>` | Deletes the key for the org from the keychain. |
+| `import <org>` | Stores the private key from stdin in your Keychain. Replaces the existing key for the org. |
+| `delete <org>` | Deletes the key for the org from your Keychain. |
+| `get`, `store`, `erase` | Called by git. You don't run these. |
 
-The token has the header `{"alg":"ES256","typ":"JWT"}` and these claims:
-
-| Claim | Value |
-| --- | --- |
-| `iss` | The org: the host without `.code.storage` |
-| `sub` | `git-$USER` |
-| `repo` | The URL path without `.git` |
-| `scopes` | `["git:read","git:write"]` |
-| `iat` | Now |
-| `exp` | Now + 1 hour |
-
-The token always asks for `git:read` and `git:write`. A
-[restricted key](https://code.storage/docs/platform/authentication#restricted-keys) must allow
+Tokens have the scopes `git:read` and `git:write`. If you use a
+[restricted key](https://code.storage/docs/platform/authentication#restricted-keys), it must allow
 both.
 
-## Security model
+## Security
 
-- **The key cannot be exported.** `import` stores the key in the login keychain, labelled
-  `code.storage:<org>`. It is marked sensitive and not extractable. `SecKeyCopyExternalRepresentation`
-  and `SecItemExport` (which `security export` uses) cannot get the private key back, even when
-  the helper itself asks.
-- **Signing happens in the keychain.** The helper calls `SecKeyCreateSignature` with
-  `ecdsaSignatureMessageX962SHA256`, and converts the DER signature to the raw `r||s` form that JWS
-  uses. The private key is in the helper's memory only once: while `import` parses the PEM.
-- **Only the helper can use the key.** The key's access control list trusts only the helper binary
-  that imported it, like `security import -x -T <helper>`. Other programs that try to sign with the
-  key get a Keychain prompt, or `errSecAuthFailed` when they cannot show one.
-- **The helper can still be used.** Any program that runs as you can run the helper and get tokens
-  from it. The keychain stops the key from being copied, not from being used through the helper.
-  Tokens expire after an hour and cover one repository.
-- **Why the legacy keychain?** The import uses `SecItemImport`, `SecAccessCreate`, and
-  `SecTrustedApplicationCreateFromPath`. Apple has deprecated these APIs, but they are the only
-  public way to store a non-extractable, app-restricted key in the login (file-based) keychain. The
-  newer data protection keychain needs a keychain-access-groups entitlement and a provisioning
-  profile, which a plain command-line tool cannot have. The Secure Enclave is not an option, because
-  Code Storage creates the key in your browser and the Secure Enclave cannot import keys.
+- **The key can't be copied.** The Keychain stores it as non-extractable. No program, including
+  this helper, can read the key back out. The Keychain does the signing.
+- **Only this helper can use the key.** Other programs that try get a Keychain prompt.
+- **Anything running as you can run the helper.** So any program on your account can get tokens,
+  but each token is valid for one hour and one repository. To stop all access, delete the key in
+  the Code Storage dashboard.
 
-## Rebuilds and upgrades
+## Keychain prompts
 
-The binary is signed ad hoc. The key's access control list refers to the exact binary (its code
-directory hash, or cdhash). So each new build, including each new release, is a different program
-to the keychain.
+The Keychain trusts the helper that imported the key. Later releases are signed with the same
+identity, so upgrades don't cause a prompt.
 
-The first time a new build signs with an existing key, macOS shows a Keychain prompt that asks for
-your login keychain password. Select **Always Allow** to trust the new build. Before you approve,
-make sure that you just installed or rebuilt the helper. Or, if you still have the PEM, run
-`import` again with the new build.
-
-To avoid the prompt on each rebuild, sign with a stable identity, such as an Apple Development
-certificate. Then the keychain checks the signing identity, not the cdhash:
-
-```sh
-make install CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)"
-```
+You see a Keychain prompt that asks for your login password when a different build uses the key.
+For example, after you build from source, or when you change between a source build and a
+release. If you just installed or built the helper, select **Always Allow**. Otherwise, select
+**Deny**.
 
 ## Uninstall
 
 ```sh
-git-credential-code-storage delete your-org   # for each org
-rm ~/.local/bin/git-credential-code-storage   # or: make uninstall
+git-credential-code-storage delete your-org
+rm ~/.local/bin/git-credential-code-storage
 git config --global --unset-all "credential.https://*.code.storage.helper"
 git config --global --unset "credential.https://*.code.storage.useHttpPath"
 ```
 
 ## Development
 
+`make build` makes an ad hoc signed universal binary in `.build/`, and `make install` installs it.
+To make a signed, notarized release tarball in `dist/`:
+
 ```sh
-make build   # universal release build, ad hoc signed, in .build/
-make dist    # tarball and SHA-256 checksum in dist/
+xcrun notarytool store-credentials code-storage --apple-id you@example.com --team-id TEAMID
+make dist CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 ```
 
 ## License
